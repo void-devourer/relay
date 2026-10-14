@@ -1,0 +1,15 @@
+node_modules/
+dist/
+data/
+.env
+.env.*
+!.env.example
+*.sqlite*
+*.zip
+.openai/site-state.json
+.openai/workflow-*.json*
+.openai/site-workflow.json*
+.openai/source-workflow.json*
+.openai/local-preview.json
+.openai/local-server.*
+outputs/
