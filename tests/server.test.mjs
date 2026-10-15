@@ -126,4 +126,23 @@ describe('Relay real HTTP and SQLite integration', { concurrency: false }, () =>
     assert.deepEqual(current.conversation, previous.conversation);
     assert.deepEqual(current.tasks, previous.tasks);
   });
+  it('connects its internal MCP host when bound to IPv6 loopback', async () => {
+    const ipv6Port = port + 1;
+    const ipv6 = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, HOST: '::1', PORT: String(ipv6Port), RELAY_DB_PATH: join(directory, 'ipv6.sqlite'), RELAY_API_TOKEN: token, RELAY_AGENT_MODE: 'scripted' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let logs = '';
+    ipv6.stdout.on('data', chunk => { logs += chunk; });
+    ipv6.stderr.on('data', chunk => { logs += chunk; });
+    try {
+      let ready = false;
+      for (let i = 0; i < 100; i++) {
+        if (ipv6.exitCode !== null) throw new Error(logs);
+        try { ready = (await fetch(`http://[::1]:${ipv6Port}/api/health`, { headers: { Authorization: `Bearer ${token}` } })).ok; } catch {}
+        if (ready) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      assert.equal(ready, true, logs);
+    } finally {
+      if (ipv6.exitCode === null) await new Promise(resolve => { ipv6.once('exit', resolve); ipv6.kill(); });
+    }
+  });
 });

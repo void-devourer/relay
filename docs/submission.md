@@ -12,7 +12,7 @@ This draft separates the product story from evidence to collect. Replace bracket
 
 **Solution:** Relay turns a spoken or typed disruption into constraint-checked alternatives. It explains who can cover pickup, which commitments must move, what the recovery costs, and what stays protected. The user reviews a before/after schedule and approves the selected proposal. Receipts, persistent preferences, a failure demonstration, and undo make the result inspectable.
 
-**What we built:** A responsive Alexa+ web simulator and a separately runnable self-hosted MCP server. Both use the same domain engine. Browser sandbox mode persists locally; the Node application persists in SQLite. The server exposes household, disruption, proposal, preference, confirmation, execution, undo, and journal tools through the official MCP SDK over Streamable HTTP. [Add verified negotiated protocol and smoke-test evidence.]
+**What we built:** A responsive Alexa+ web simulator and a separately runnable self-hosted MCP server. Both use the same domain engine. Browser sandbox mode persists locally; the Node application persists in SQLite. The server exposes household, disruption, proposal, preference, confirmation, execution, undo, and journal tools through the official MCP SDK over Streamable HTTP. Integration coverage verifies negotiated protocol 2025-11-25, all eight tools, actual chat-to-MCP calls, and SQLite restart persistence. Typecheck, production build, and 28 tests pass.
 
 **Why it is distinctive:** Relay repairs several connected commitments while respecting travel, confirmed caregiver availability, budget, and protected dinner. Proposals bind to current household state. The failure demonstration restores sandbox tasks instead of reporting partial success. The interaction exposes the decision and its consequences before execution.
 
@@ -62,10 +62,10 @@ For each actual tool, answer: purpose; setup/onboarding experience; what worked;
 
 ## Evidence checklist
 
-- [ ] Record completed typecheck, tests, build, and MCP smoke results.
-- [ ] Record negotiated MCP version and real tool invocation.
+- [x] Typecheck and production build passed; all 28 tests passed; read-only MCP smoke discovered eight tools and read four persisted tasks.
+- [x] MCP initialization negotiated 2025-11-25; integration tests exercised actual HTTP tool invocation.
 - [ ] Inspect both server mode and hosted browser sandbox; describe their separate persistence.
-- [ ] Record the rollback, retry, undo, and explicit approval workflow.
+- [x] Local browser QA exercised explicit approval, injected rollback, retry, applied-state refresh and grounded pickup status; integration tests cover undo.
 - [ ] Include GitHub access, setup instructions, and the appropriate license.
 - [ ] Provide hosted-demo access instructions and a public video under three minutes.
 - [ ] Replace draft claims with observed results; retain limitations for untested paths.

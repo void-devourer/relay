@@ -120,7 +120,12 @@ const server = createServer(async (req, res) => {
 });
 server.listen(port, bind, async () => {
   try {
-    host = await createHost(`http://127.0.0.1:${port}/mcp`, token, mode, process.env.BEDROCK_MODEL_ID ?? null, process.env.AWS_REGION ?? 'us-east-1');
+    const address = server.address().address;
+    const internalHost = address.includes(':') ? '[::1]' : address === '0.0.0.0' ? '127.0.0.1' : address;
+    const internalOrigin = `http://${internalHost}:${port}`;
+    origins.add(internalOrigin);
+    hosts.add(new URL(internalOrigin).host);
+    host = await createHost(`${internalOrigin}/mcp`, token, mode, process.env.BEDROCK_MODEL_ID ?? null, process.env.AWS_REGION ?? 'us-east-1');
     console.log(`Relay ready: http://localhost:${port} | MCP: /mcp | ${mode} host | SQLite sandbox`);
   } catch (error) { console.error('MCP host startup failed:', error.message); server.close(); store.close(); process.exitCode = 1; }
 });
