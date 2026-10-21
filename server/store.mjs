@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { createHousehold } from '../shared/engine.mjs';
+import { createHousehold, migrateHousehold } from '../shared/engine.mjs';
 
 export function openStore(filename) {
   mkdirSync(dirname(filename), { recursive: true });
@@ -39,5 +39,9 @@ export function openStore(filename) {
     return state;
   }
   if (!read.get(id)) save(createHousehold());
+  else {
+    const current = load();
+    if (current.schemaVersion !== 2) save(migrateHousehold(current), current.revision);
+  }
   return { load, save, reset: () => save(createHousehold(), undefined, true), close: () => db.close() };
 }

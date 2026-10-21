@@ -238,7 +238,7 @@ test('review tool is read-only and execution receipts describe only actual appli
   assert.equal(applied.state.journal.filter((entry) => entry.type === 'receipt').length, best(state).changes.length);
   const replay = runTool(applied.state, 'execute_recovery', { planId: best(state).id, confirmed: true });
   assert.equal(replay.result.idempotent, true);
-  assert.equal(toolDefinitions.length, 8);
+  assert.equal(toolDefinitions.length, 10);
   assert.throws(() => runTool(state, 'send_message'), /Unknown Relay tool/);
 });
 

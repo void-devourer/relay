@@ -6,7 +6,7 @@ const client = new Client({ name: 'relay-smoke-check', version: '0.1.0' });
 try {
   await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: process.env.RELAY_API_TOKEN ? { Authorization: `Bearer ${process.env.RELAY_API_TOKEN}` } : {} } }));
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 8);
+  assert.equal(listed.tools.length, 10);
   const result = await client.callTool({ name: 'get_household', arguments: {} });
   assert.equal(result.isError ?? false, false);
   const data = result.structuredContent ?? JSON.parse(result.content.find(item => item.type === 'text').text);

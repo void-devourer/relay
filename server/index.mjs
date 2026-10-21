@@ -23,10 +23,11 @@ const store = openStore(resolve(root, process.env.RELAY_DB_PATH ?? 'data/relay.s
 const origins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://[::1]:${port}`]);
 if (publicOrigin) origins.add(new URL(publicOrigin).origin);
 const hosts = new Set([...origins].map(origin => new URL(origin).host));
+for (const origin of (process.env.RELAY_ALLOWED_ORIGINS ?? '').split(',').filter(Boolean)) origins.add(new URL(origin.trim()).origin);
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const messageSchema = z.object({ message: z.string().trim().min(1).max(2000), planId: z.string().min(1).max(120).optional() }).strict();
-const scenarioSchema = z.object({ scenario: z.enum(['partner-delayed', 'school-early', 'car-unavailable']) }).strict();
-const executeSchema = z.object({ planId: z.string().min(1).max(120), confirmed: z.literal(true), failAt: z.number().int().min(0).max(50).optional() }).strict();
+const scenarioSchema = z.object({ scenario: z.enum(['partner-delayed', 'school-early', 'car-unavailable', 'backup-unavailable']), delayMinutes: z.number().int().min(0).max(480).optional(), pickupTime: z.number().int().min(840).max(1200).optional(), travelMinutes: z.number().int().min(1).max(180).optional() }).strict();
+const executeSchema = z.object({ planId: z.string().min(1).max(120), confirmed: z.literal(true), failAt: z.number().int().min(0).max(50).optional(), adaptive: z.boolean().optional() }).strict();
 const preferenceSchema = z.object({ key: z.enum(['maxExtraCost', 'preferFamily', 'protectDinner']), value: z.union([z.boolean(), z.number().min(0).max(100)]) }).strict();
 let host;
 let chatQueue = Promise.resolve();
@@ -61,10 +62,17 @@ const server = createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'microphone=(self)');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https: http://localhost:* http://127.0.0.1:* http://[::1]:*; frame-ancestors 'self'");
   try {
     if (!hosts.has(req.headers.host)) return json(res, 403, { error: 'Unrecognized host.' });
     if (req.headers.origin && !origins.has(req.headers.origin)) return json(res, 403, { error: 'Cross-origin requests are not allowed.' });
+    if (req.headers.origin) {
+      res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, MCP-Protocol-Version');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    }
+    if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
     const url = new URL(req.url, `http://127.0.0.1:${port}`);
     if (url.pathname.startsWith('/api/') || url.pathname === '/mcp') {
       if (!authorized(req)) return json(res, 401, { error: 'Bearer authentication required.' });
@@ -97,6 +105,8 @@ const server = createServer(async (req, res) => {
         return json(res, 200, await call('propose_recovery'));
       }
       if (url.pathname === '/api/execute') return json(res, 200, await call('execute_recovery', executeSchema.parse(data)));
+      if (url.pathname === '/api/constraint') return json(res, 200, await call('set_constraint', z.object({ kind: z.literal('meeting-lock'), taskId: z.string().max(120).optional(), value: z.boolean() }).strict().parse(data)));
+      if (url.pathname === '/api/calendar') return json(res, 200, await call('import_calendar', z.object({ text: z.string().max(50000), ownerId: z.enum(['alex', 'priya']), day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }).strict().parse(data)));
       if (url.pathname === '/api/undo') return json(res, 200, await call('undo_recovery'));
       if (url.pathname === '/api/preferences') return json(res, 200, await call('set_preference', preferenceSchema.parse(data)));
       if (url.pathname === '/api/reset') return json(res, 200, store.reset());

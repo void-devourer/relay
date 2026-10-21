@@ -1,5 +1,7 @@
 declare module '*.mjs' {
   export function createHousehold(): unknown;
+  export function migrateHousehold(state: unknown): unknown;
+  export function previewCalendar(text: string, ownerId?: string, day?:string): {day:string;ownerId:string;events:{title:string;start:number;end:number}[];skipped:number};
   export function applyDisruption(state: unknown, scenario: string): unknown;
   export function buildPlans(state: unknown): unknown;
   export function executePlan(state: unknown, planId: string, options?: Record<string, unknown>): unknown;

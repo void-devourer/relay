@@ -1,5 +1,6 @@
 /** Relay's deterministic sandbox domain. No network, model, or external writes. */
-const SCENARIOS = ['partner-delayed', 'school-early', 'car-unavailable'];
+import { previewCalendar } from './calendar.mjs';
+const SCENARIOS = ['partner-delayed', 'school-early', 'car-unavailable', 'backup-unavailable'];
 const FIELDS = ['owner', 'start', 'end', 'status'];
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const fail = (message, code) => { const error = new Error(message); error.code = code; throw error; };
@@ -13,7 +14,7 @@ export function formatTime(minutes) {
 
 export function createHousehold() {
   return {
-    id: 'relay-demo-household', revision: 0, scenario: null, phase: 'steady',
+    id: 'relay-demo-household', schemaVersion: 2, revision: 0, scenario: null, phase: 'steady', disruptions: [], blockedVariants: [], importedCalendar: [], lastFailure: null,
     members: [
       { id: 'alex', name: 'Alex', role: 'Parent', initials: 'AL', color: '#f0ae72', availableFrom: 935, availableUntil: 1260, travelMinutes: 15, authorizedPickup: true, availabilityConfirmed: true },
       { id: 'priya', name: 'Priya', role: 'Parent', initials: 'PR', color: '#b0a2e3', availableFrom: 840, availableUntil: 1260, travelMinutes: 15, authorizedPickup: true, availabilityConfirmed: true },
@@ -37,12 +38,26 @@ function journal(state, type, title, detail) {
   state.journal.unshift({ id: `event-${tick}`, at: new Date(Date.UTC(2026, 9, 15, 8, 30) + tick * 1000).toISOString(), type, title, detail });
 }
 
-export function applyDisruption(input, scenario) {
-  if (!SCENARIOS.includes(scenario)) fail('Choose partner delayed, school early, or car unavailable.', 'INVALID_SCENARIO');
+export function migrateHousehold(input) {
   const state = copy(input);
+  if (state.schemaVersion !== 2) {
+    state.schemaVersion = 2;
+    state.disruptions = state.scenario ? [{ id: state.scenario, title: 'Previous disruption retained' }] : [];
+    state.blockedVariants = [];
+    state.importedCalendar = [];
+    state.lastFailure = null;
+    state.plans = [];
+    state.activePlanId = null;
+    state.revision += 1;
+    if (state.phase === 'planned' || state.phase === 'rolled_back') state.phase = 'disrupted';
+  }
+  return state;
+}
+
+export function applyDisruption(input, scenario, options = {}) {
+  if (!SCENARIOS.includes(scenario)) fail('Choose partner delayed, school early, or car unavailable.', 'INVALID_SCENARIO');
+  const state = migrateHousehold(input);
   const seed = createHousehold();
-  state.members = seed.members;
-  state.tasks = seed.tasks;
   state.scenario = scenario;
   state.phase = 'disrupted';
   state.revision += 1;
@@ -52,19 +67,66 @@ export function applyDisruption(input, scenario) {
   const pickup = task(state, 'pickup');
   pickup.status = 'conflict';
   if (scenario === 'partner-delayed') {
-    member(state, 'alex').availableFrom = 1035;
+    const delay = options.delayMinutes ?? 100;
+    if (!Number.isInteger(delay) || delay < 0 || delay > 480) fail('Delay must be 0–480 whole minutes.', 'INVALID_ARGUMENT');
+    member(state, 'alex').availableFrom = member(seed, 'alex').availableFrom + delay;
     task(state, 'grocery').status = 'conflict';
-    journal(state, 'disruption', 'Alex is delayed', 'Alex is available from 5:15 PM. The 4:00 PM school pickup needs a confirmed replacement.');
+    journal(state, 'disruption', `Alex delayed by ${delay} minutes`, `Alex is available from ${formatTime(member(state, 'alex').availableFrom)} (${delay} minutes later). Previous household facts are retained.`);
   } else if (scenario === 'school-early') {
+    const deadline = options.pickupTime ?? 910;
+    if (!Number.isInteger(deadline) || deadline < 840 || deadline > 1200) fail('Pickup must be between 2:00 and 8:00 PM.', 'INVALID_ARGUMENT');
     pickup.originalStart = pickup.start;
-    pickup.start = 910;
-    pickup.end = 920;
-    journal(state, 'disruption', 'School closes at 3:10 PM', 'Pickup moves forward by 50 minutes. Alex is still unavailable until 3:35 PM.');
-  } else {
-    member(state, 'alex').travelMinutes = 55;
+    pickup.start = deadline;
+    pickup.end = deadline + 10;
+    journal(state, 'disruption', `School pickup is ${formatTime(deadline)}`, 'The pickup deadline changed. Earlier delays, permissions and calendar commitments remain in place.');
+  } else if (scenario === 'car-unavailable') {
+    const travel = options.travelMinutes ?? 55;
+    if (!Number.isInteger(travel) || travel < 1 || travel > 180) fail('Travel time must be 1–180 whole minutes.', 'INVALID_ARGUMENT');
+    member(state, 'alex').travelMinutes = travel;
     task(state, 'grocery').status = 'conflict';
-    journal(state, 'disruption', 'Alex’s car is unavailable', 'Alex’s one-way travel time increases from 15 to 55 minutes using the fixture transit route.');
+    journal(state, 'disruption', 'Alex’s car is unavailable', `Alex now needs ${travel} travel minutes. Other household facts are retained.`);
+  } else {
+    member(state, 'morgan').availabilityConfirmed = false;
+    journal(state, 'disruption', 'Morgan is unavailable', 'The trusted backup can no longer cover pickup. No permission or availability is invented.');
   }
+  const latest = state.journal[0];
+  state.disruptions = [...state.disruptions.filter(event => event.id !== scenario), { id: scenario, title: latest.title }];
+  return state;
+}
+
+export function setConstraint(input, args) {
+  const state = migrateHousehold(input);
+  if (args.kind === 'meeting-lock') {
+    if (typeof args.value !== 'boolean') fail('Meeting lock must be true or false.', 'INVALID_ARGUMENT');
+    const meeting = task(state, args.taskId ?? 'meeting');
+    if (!meeting || meeting.kind !== 'work') fail('Choose an existing work commitment.', 'INVALID_ARGUMENT');
+    meeting.flexible = !args.value;
+    journal(state, 'constraint', args.value ? 'Meeting protected' : 'Meeting can move', `${meeting.title} ${args.value ? 'is locked to its current owner and time' : 'may move if feasible'}.`);
+  } else fail('Unknown constraint type.', 'INVALID_ARGUMENT');
+  state.revision += 1;
+  state.lastExecution = null;
+  state.scenario ??= 'constraints-updated';
+  generatePlans(state);
+  return state;
+}
+
+export function importCalendar(input, args) {
+  const preview = previewCalendar(args.text, args.ownerId, args.day);
+  const state = migrateHousehold(input);
+  state.tasks = state.tasks.filter(item => !item.id.startsWith(`calendar-${preview.ownerId}-`));
+  const imported = preview.events.map((event, index) => ({ ...event, id: `calendar-${preview.ownerId}-${index}` }));
+  if (preview.ownerId === 'priya') {
+    const primary = imported.shift();
+    state.tasks = state.tasks.map(item => item.id === 'meeting' ? { ...primary, id: 'meeting' } : item);
+  }
+  state.tasks.push(...imported);
+  state.calendarDate = preview.day;
+  state.importedCalendar = [...state.importedCalendar.filter(item => item.ownerId !== preview.ownerId), { ownerId: preview.ownerId, day: preview.day, count: preview.events.length }];
+  state.revision += 1;
+  state.lastExecution = null;
+  state.scenario ??= 'calendar-imported';
+  generatePlans(state);
+  journal(state, 'calendar', 'Calendar commitments imported', `${preview.events.length} fixed commitments for ${preview.ownerId} on ${preview.day}. No source calendar was modified.`);
   return state;
 }
 
@@ -103,7 +165,7 @@ function constraints(state, tasks, extraCost) {
     for (let index = 0; index < assigned.length; index += 1) {
       const item = assigned[index];
       if (!Number.isFinite(item.start) || !Number.isFinite(item.end) || item.end <= item.start) reasons.push(`${item.title} has an invalid time window.`);
-      if (item.start < person.availableFrom || item.end > person.availableUntil) reasons.push(`${person.name} is not available for ${item.title} at ${formatTime(item.start)}.`);
+      if (item.kind !== 'work' && (item.start < person.availableFrom || item.end > person.availableUntil)) reasons.push(`${person.name} is not available for ${item.title} at ${formatTime(item.start)}.`);
       if (!person.availabilityConfirmed) reasons.push(`${person.name} has not confirmed availability.`);
       if (item.kind === 'pickup' && !person.authorizedPickup) reasons.push(`${person.name} is not authorized to collect Sam.`);
       const previous = assigned[index - 1];
@@ -116,6 +178,10 @@ function constraints(state, tasks, extraCost) {
     }
   }
   for (const item of tasks) if (!member(state, item.owner)) reasons.push(`${item.title} has an unknown owner.`);
+  for (const original of state.tasks.filter(item => item.kind === 'work' && !item.flexible)) {
+    const changed = tasks.find(item => item.id === original.id);
+    if (!changed || changed.start !== original.start || changed.end !== original.end || changed.owner !== original.owner) reasons.push(`${original.title} is locked and cannot move.`);
+  }
   const dinner = tasks.find((item) => item.kind === 'dinner');
   const originalDinner = task(state, 'dinner');
   if (state.preferences.protectDinner && (dinner.start !== originalDinner.start || dinner.end !== originalDinner.end)) reasons.push('Family dinner is protected and cannot move.');
@@ -137,7 +203,8 @@ function candidate(state, variant) {
   if (variant === 'family') {
     pickup.owner = 'priya';
     const duration = meeting.end - meeting.start;
-    const shiftedStart = Math.max(meeting.start, pickup.end + priya.travelMinutes);
+    const overlapsPickup = meeting.end + priya.travelMinutes > pickup.start && meeting.start < pickup.end + priya.travelMinutes;
+    const shiftedStart = overlapsPickup ? Math.max(meeting.start, pickup.end + priya.travelMinutes) : meeting.start;
     if (shiftedStart !== meeting.start && !meeting.flexible) {
       // Leave the locked meeting in place so ordinary overlap validation rejects it.
     } else {
@@ -146,14 +213,15 @@ function candidate(state, variant) {
     }
     title = 'Keep it in the family';
     subtitle = `Priya collects Sam at ${formatTime(pickup.start)}. Alex handles groceries when available.`;
-    reasons = [`Priya’s pickup permission and availability are confirmed in the household fixture.`, `Allow ${priya.travelMinutes} minutes for Priya to travel after pickup.`, 'No paid backup is required.'];
+    reasons = [`Priya's pickup permission: ${priya.authorizedPickup ? 'approved' : 'missing'}; availability: ${priya.availabilityConfirmed ? 'confirmed' : 'unconfirmed'}.`, `Allow ${priya.travelMinutes} minutes for Priya to travel after pickup.`, 'No paid backup is required.'];
     tradeoffs = [meeting.start === task(state, 'meeting').start ? 'Priya’s meeting stays in place.' : `Priya’s flexible meeting moves to ${formatTime(meeting.start)}–${formatTime(meeting.end)}.`];
   } else if (variant === 'backup') {
     pickup.owner = 'morgan';
-    extraCost = { 'partner-delayed': 12, 'school-early': 8, 'car-unavailable': 14 }[state.scenario];
+    extraCost = (state.disruptions ?? []).some(event => event.id === 'school-early') ? 8 : state.scenario === 'school-early' ? 8 : 12;
     title = 'Call on your trusted backup';
-    subtitle = `Morgan collects Sam at ${formatTime(pickup.start)}. Priya’s meeting stays at 3:00 PM.`;
-    reasons = ['Morgan has fixture-confirmed availability from 3:00–6:00 PM and existing school pickup permission.', `Morgan’s route takes ${member(state, 'morgan').travelMinutes} minutes.`, 'Priya’s meeting remains uninterrupted.'];
+    subtitle = `Morgan collects Sam at ${formatTime(pickup.start)}. Priya's meeting stays at ${formatTime(meeting.start)}.`;
+    const morgan = member(state, 'morgan');
+    reasons = [`Morgan's pickup permission: ${morgan.authorizedPickup ? 'approved' : 'missing'}; availability: ${morgan.availabilityConfirmed ? 'confirmed' : 'unconfirmed'}.`, `Morgan’s route takes ${morgan.travelMinutes} minutes.`, 'Priya’s meeting remains uninterrupted.'];
     tradeoffs = [`$${extraCost} fixture travel reimbursement.`, 'Uses the trusted backup’s previously confirmed pickup window.'];
   } else {
     const arrival = Math.max(pickup.start, alex.availableFrom + alex.travelMinutes);
@@ -172,7 +240,7 @@ function candidate(state, variant) {
     if (item.status === 'conflict' || item.owner !== original.owner || item.start !== original.start || item.end !== original.end) item.status = 'updated';
   }
   const rejected = constraints(state, tasks, extraCost);
-  if (variant === 'family' && !meeting.flexible && meeting.start !== Math.max(task(state, 'meeting').start, pickup.end + priya.travelMinutes)) rejected.push('Priya’s meeting is locked and cannot be moved.');
+  if ((state.blockedVariants ?? []).includes(variant)) rejected.push('This workflow failed persistently and is unavailable for this afternoon. Choose another option.');
   const feasible = rejected.length === 0;
   const changes = changesBetween(state.tasks, tasks, state);
   let score = variant === 'family' ? (state.preferences.preferFamily ? 96 : 82) : variant === 'backup' ? (state.preferences.preferFamily ? 87 : 97) : 65;
@@ -180,7 +248,7 @@ function candidate(state, variant) {
   if (!feasible) score = Math.max(0, score - 60);
   if (grocery.start !== task(state, 'grocery').start) tradeoffs.push(`Groceries move to ${formatTime(grocery.start)}–${formatTime(grocery.end)}.`);
   reasons.push(`Dinner remains at ${formatTime(task(state, 'dinner').start)}.`);
-  return { id: `${state.scenario}-r${state.revision}-${variant}`, title, subtitle, feasible, score, extraCost, changes, reasons: [...reasons, ...rejected], tradeoffs, baseRevision: state.revision };
+  return { id: `${state.scenario}-r${state.revision}-${variant}`, variant, title, subtitle, feasible, score, extraCost, changes, reasons: [...reasons, ...rejected], tradeoffs, baseRevision: state.revision };
 }
 
 function generatePlans(state) {
@@ -233,9 +301,16 @@ export function executePlan(input, planId, options = {}) {
     state.tasks = beforeTasks;
     state.revision += 1;
     state.phase = 'rolled_back';
-    state.plans = state.plans.map((item) => ({ ...item, baseRevision: state.revision }));
-    state.activePlanId = plan.id;
-    journal(state, 'rollback', 'All changes rolled back', `${error.message} The entire afternoon was restored. ${plan.title} is ready to retry after review.`);
+    if (options.adaptive === true) {
+      state.blockedVariants = [...new Set([...(state.blockedVariants ?? []), plan.variant ?? plan.id.split('-').at(-1)])];
+      state.lastFailure = { title: plan.title, detail: 'The failed workflow has been excluded. New alternatives require a fresh approval.' };
+      generatePlans(state);
+      state.phase = 'rolled_back';
+    } else {
+      state.plans = state.plans.map((item) => ({ ...item, baseRevision: state.revision }));
+      state.activePlanId = plan.id;
+    }
+    journal(state, 'rollback', 'All changes rolled back', `${error.message} All tasks were restored. ${options.adaptive ? 'The failed workflow is blocked and fresh alternatives have been checked.' : `${plan.title} is ready to retry after review.`}`);
     return state;
   }
   state.revision += 1;
@@ -279,11 +354,13 @@ export function updatePreference(input, key, value) {
 
 export const toolDefinitions = [
   { name: 'get_household', description: 'Read the sandbox household, current afternoon, remembered preferences and recovery proposals.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'report_disruption', description: 'Report a seeded household disruption. Creates a conflict but never applies a recovery.', inputSchema: { type: 'object', properties: { scenario: { type: 'string', enum: SCENARIOS } }, required: ['scenario'], additionalProperties: false } },
+  { name: 'report_disruption', description: 'Add a disruption to current facts without resetting earlier changes. Times are minutes after midnight; delays are relative to the original availability.', inputSchema: { type: 'object', properties: { scenario: { type: 'string', enum: SCENARIOS }, delayMinutes: { type: 'integer', minimum: 0, maximum: 480 }, pickupTime: { type: 'integer', minimum: 840, maximum: 1200 }, travelMinutes: { type: 'integer', minimum: 1, maximum: 180 } }, required: ['scenario'], additionalProperties: false } },
+  { name: 'set_constraint', description: 'Lock or unlock an existing work commitment at its current time and owner. Locked meetings are hard constraints.', inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['meeting-lock'] }, taskId: { type: 'string' }, value: { type: 'boolean' } }, required: ['kind', 'value'], additionalProperties: false } },
+  { name: 'import_calendar', description: 'Import explicitly supplied single-day timed ICS commitments as locked work events. Never modifies the source calendar or grants pickup permission.', inputSchema: { type: 'object', properties: { text: { type: 'string', maxLength: 50000 }, ownerId: { type: 'string', enum: ['alex', 'priya'] }, day: { type: 'string' } }, required: ['text', 'ownerId'], additionalProperties: false } },
   { name: 'propose_recovery', description: 'Rank concrete options against confirmed availability, pickup permission, travel, budget and dinner.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'set_preference', description: 'Remember a household budget or preference and invalidate stale proposals.', inputSchema: { type: 'object', properties: { key: { type: 'string', enum: ['maxExtraCost', 'preferFamily', 'protectDinner'] }, value: { anyOf: [{ type: 'number', minimum: 0, maximum: 100 }, { type: 'boolean' }] } }, required: ['key', 'value'], additionalProperties: false } },
   { name: 'confirm_recovery', description: 'Read-only review of an available recovery with exact before/after changes. This tool does not grant execution authority.', inputSchema: { type: 'object', properties: { planId: { type: 'string' } }, required: ['planId'], additionalProperties: false } },
-  { name: 'execute_recovery', description: 'Apply a reviewed sandbox recovery atomically. The authenticated caller must explicitly supply confirmed:true. Optional failAt injects a sandbox failure and restores all tasks.', inputSchema: { type: 'object', properties: { planId: { type: 'string' }, confirmed: { type: 'boolean' }, failAt: { type: 'integer', minimum: 0 } }, required: ['planId', 'confirmed'], additionalProperties: false } },
+  { name: 'execute_recovery', description: 'Apply a reviewed sandbox recovery atomically with explicit confirmation. failAt injects failure; adaptive:true blocks the failed workflow and generates fresh alternatives after restoring tasks.', inputSchema: { type: 'object', properties: { planId: { type: 'string' }, confirmed: { type: 'boolean' }, failAt: { type: 'integer', minimum: 0 }, adaptive: { type: 'boolean' } }, required: ['planId', 'confirmed'], additionalProperties: false } },
   { name: 'undo_recovery', description: 'Reverse the latest applied sandbox recovery while retaining later household preferences.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'get_journal', description: 'Read actual proposal, execution, rollback, undo and preference receipts in the sandbox audit journal.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
 ];
@@ -293,7 +370,9 @@ export function runTool(input, name, args = {}) {
   let result;
   switch (name) {
     case 'get_household': result = copy(state); break;
-    case 'report_disruption': state = applyDisruption(state, args.scenario); result = { scenario: state.scenario, phase: state.phase, revision: state.revision }; break;
+    case 'report_disruption': state = applyDisruption(state, args.scenario, args); result = { scenario: state.scenario, phase: state.phase, revision: state.revision }; break;
+    case 'set_constraint': state = setConstraint(state, args); result = { plans: state.plans, revision: state.revision }; break;
+    case 'import_calendar': state = importCalendar(state, args); result = { importedCalendar: state.importedCalendar, plans: state.plans, revision: state.revision }; break;
     case 'propose_recovery': state = buildPlans(state); result = { plans: copy(state.plans), activePlanId: state.activePlanId, revision: state.revision }; break;
     case 'set_preference': state = updatePreference(state, args.key, args.value); result = { preferences: copy(state.preferences), plans: copy(state.plans), revision: state.revision }; break;
     case 'confirm_recovery': {
@@ -314,7 +393,7 @@ export function runTool(input, name, args = {}) {
 
 function describePlan(state) {
   const plan = state.plans.find((item) => item.id === state.activePlanId);
-  if (!plan) return 'No recovery currently meets every constraint. Check confirmed pickup permission, availability and your budget.';
+  if (!plan) return 'No recovery currently meets every constraint. Pickup cannot safely be reassigned with the current meeting lock, availability, travel and budget. Review the rejected options; a verified availability change or an explicitly relaxed constraint is needed.';
   return `${plan.title}: ${plan.subtitle} ${plan.tradeoffs.join(' ')} Extra fixture cost: $${plan.extraCost}. Dinner stays at ${formatTime(task(state, 'dinner').start)}. Review the changes, then say “apply the plan” to confirm.`;
 }
 
@@ -330,6 +409,8 @@ export function respond(input, message) {
       const outcome = runTool(state, name, args);
       state = outcome.state;
       const summaries = {
+        set_constraint: 'Updated a hard meeting constraint and rechecked proposals.',
+        import_calendar: 'Imported fixed calendar commitments after validation.',
         get_household: 'Read current commitments and household preferences.',
         report_disruption: 'Recorded the disruption; existing plans are invalid.',
         propose_recovery: 'Checked availability, travel, permission and budget; ranked recovery options.',
@@ -351,11 +432,37 @@ export function respond(input, message) {
     const negation = /\b(no|nope|not|never|cancel|stop)\b|don't|do not|hold off/.test(text);
     const approval = /^(yes|apply(?: the)?(?: recommended| selected)? plan|go ahead|confirm(?: the)? plan|approve(?: the)? plan|yes,? (?:apply(?: the)?(?: selected)? plan|go ahead))$/.test(compact);
     const budget = text.match(/\b(under|budget(?: of)?|limit(?: of)?|maximum|max|at most)\s*\$?\s*(\d+(?:\.\d{1,2})?)/);
+    const facts = [];
+    if (/\b(?:alex|partner|train)\b[^.!;]*\b(?:delay(?:ed)?|late|stuck)\b/.test(text) && !/\b(?:not|never)\s+(?:delay(?:ed)?|late)|isn't (?:delayed|late)/.test(text)) {
+      const amount = text.match(/(?:by\s+|delayed\s+|late\s+)?(\d{1,3})\s*(?:minutes?|mins?)\b/);
+      facts.push(['report_disruption', { scenario: 'partner-delayed', ...(amount ? { delayMinutes: Number(amount[1]) } : {}) }]);
+    }
+    if (/\bschool\b/.test(text) && /early|closes|closing|pickup/.test(text) && !/school (?:doesn't|does not|won't) clos/.test(text)) {
+      const clock = text.match(/(?:closes?|closing|pickup(?: at)?)\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
+      let minutes;
+      if (clock) { let hour = Number(clock[1]); if (clock[3] === 'pm' && hour < 12 || !clock[3] && hour < 8) hour += 12; minutes = hour * 60 + Number(clock[2] ?? 0); }
+      facts.push(['report_disruption', { scenario: 'school-early', ...(minutes !== undefined ? { pickupTime: minutes } : {}) }]);
+    }
+    if (/\bcar\b/.test(text) && /unavailable|broken|broke|won't|can't|trouble|no car/.test(text)) {
+      const travel = text.match(/(?:travel|route|transit)(?: takes?)?\s+(\d{1,3})\s*(?:minutes?|mins?)/);
+      facts.push(['report_disruption', { scenario: 'car-unavailable', ...(travel ? { travelMinutes: +travel[1] } : {}) }]);
+    }
+    if (/\bmorgan\b[^.!;]*\b(?:unavailable|can't|cannot|cancelled|canceled|not available)\b/.test(text)) facts.push(['report_disruption', { scenario: 'backup-unavailable' }]);
+    if (/(?:don't|do not|never) move (?:my |the |priya'?s )?(?:client )?(?:call|meeting)|protect (?:my |the )?(?:client )?(?:call|meeting)|lock (?:my |the )?(?:client )?(?:call|meeting)/.test(text)) facts.push(['set_constraint', { kind: 'meeting-lock', taskId: 'meeting', value: true }]);
+    if (/unlock (?:my |the )?(?:client )?(?:call|meeting)|(?:call|meeting) can move/.test(text)) facts.push(['set_constraint', { kind: 'meeting-lock', taskId: 'meeting', value: false }]);
     let scenario;
     if (/school/.test(text) && /early|closes|closing|3:10/.test(text)) scenario = 'school-early';
     else if (/car/.test(text) && /unavailable|broken|broke|won't|can't|trouble|no car/.test(text)) scenario = 'car-unavailable';
     else if (/alex|partner|train|running/.test(text) && /delay|late|stuck/.test(text)) scenario = 'partner-delayed';
-    if (scenario && !negation) {
+    if (facts.length) {
+      for (const [name, args] of facts) invoke(name, args);
+      if (budget) {
+        const value = Math.max(0, Number(budget[2]) - (budget[1] === 'under' ? 0.01 : 0));
+        invoke('set_preference', { key: 'maxExtraCost', value: Math.round(value * 100) / 100 });
+      }
+      invoke('propose_recovery');
+      reply = `${facts.length} household fact${facts.length === 1 ? '' : 's'} updated; earlier facts preserved. ${describePlan(state)}`;
+    } else if (scenario && !negation) {
       invoke('report_disruption', { scenario });
       invoke('propose_recovery');
       reply = describePlan(state);
@@ -379,8 +486,8 @@ export function respond(input, message) {
       const plan = state.plans.find((item) => item.id === state.activePlanId);
       if (!plan) fail('No feasible recovery is available for a failure test.', 'INFEASIBLE_PLAN');
       invoke('confirm_recovery', { planId: plan.id });
-      invoke('execute_recovery', { planId: plan.id, confirmed: true, failAt: Math.min(2, plan.changes.length - 1) });
-      reply = 'The sandbox service failed after partial processing. Every task was restored atomically, and the recovery remains ready to review and retry. No external service was contacted.';
+      invoke('execute_recovery', { planId: plan.id, confirmed: true, failAt: Math.min(2, plan.changes.length - 1), adaptive: true });
+      reply = `The persistent service failure restored every task. The failed workflow is excluded and fresh options require review. ${describePlan(state)}`;
     } else if (approval && !negation) {
       if (!state.activePlanId) fail(state.phase === 'resolved' ? 'Your recovery is already applied. There is no new plan awaiting approval.' : 'Generate and review a feasible recovery before approving it.', 'NO_PLAN');
       // Hosts may set activePlanId from a validated, explicit caller selection.

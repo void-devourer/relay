@@ -1,5 +1,9 @@
 # Relay implementation contract
 
+## October 22 v2 additions
+
+The upgrade prompts/plan supersede the initial fixture-reset behavior below. State schemaVersion is 2 with cumulative disruptions, blockedVariants, importedCalendar, lastFailure and optional calendarDate. report_disruption accepts exact delayMinutes, pickupTime and travelMinutes plus backup-unavailable. set_constraint enforces meeting-lock; import_calendar validates timed one-day ICS data. Persistent failures with adaptive:true restore tasks, block the failed variant and produce fresh proposals. The hosted Worker uses per-user D1 persistence and an SDK client over in-process MCP; external /mcp supports Streamable HTTP. Node keeps SQLite and HTTP MCP. Browser mode remains a development fallback. The frontend auto-detects a same-origin backend on any port and supports an explicitly configured external HTTPS/loopback origin with an in-memory token. No live Bedrock call is verified without usable credentials and model access.
+
 Project: household plan rescue for an Alexa+ simulator, paired with a real self-hosted MCP server. All household data and external service actions are explicitly sandbox fixtures. Browser simulator and Node server use the same domain engine. No external messages, purchases, calendar writes, or bookings.
 
 ## Ownership

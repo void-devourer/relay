@@ -18,7 +18,7 @@ describe('Relay real HTTP and SQLite integration', { concurrency: false }, () =>
   let output = '';
   let client;
   async function start() {
-    child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), RELAY_DB_PATH: join(directory, 'test.sqlite'), RELAY_API_TOKEN: token, RELAY_AGENT_MODE: 'scripted' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn(process.execPath, ['server/index.mjs'], { cwd: root, env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), RELAY_DB_PATH: join(directory, 'test.sqlite'), RELAY_API_TOKEN: token, RELAY_AGENT_MODE: 'scripted', RELAY_ALLOWED_ORIGINS: 'https://relay.example' }, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { output += chunk; });
     for (let i = 0; i < 100; i++) {
@@ -54,7 +54,7 @@ describe('Relay real HTTP and SQLite integration', { concurrency: false }, () =>
     const response = await fetch(base + '/mcp', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } }) });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).result.protocolVersion, '2025-11-25');
-    assert.equal((await client.listTools()).tools.length, 8);
+    assert.equal((await client.listTools()).tools.length, 10);
   });
   it('blocks unauthenticated access, foreign origins, invalid bodies and unknown tools', async () => {
     assert.equal((await fetch(base + '/api/state')).status, 401);
@@ -62,6 +62,16 @@ describe('Relay real HTTP and SQLite integration', { concurrency: false }, () =>
     assert.equal((await request('/api/chat', { message: '' })).response.status, 400);
     const result = await client.callTool({ name: 'report_disruption', arguments: { scenario: 'made-up' } });
     assert.equal(result.isError, true);
+  });
+  it('allows only the explicitly configured frontend origin and supports token preflight', async () => {
+    const headers = { Authorization: `Bearer ${token}`, Origin: 'https://relay.example' };
+    const allowed = await fetch(base + '/api/meta', { headers });
+    assert.equal(allowed.status, 200);
+    assert.equal(allowed.headers.get('Access-Control-Allow-Origin'), 'https://relay.example');
+    const preflight = await fetch(base + '/api/state', { method: 'OPTIONS', headers: { Origin: 'https://relay.example', 'Access-Control-Request-Headers': 'authorization, content-type' } });
+    assert.equal(preflight.status, 204);
+    assert.match(preflight.headers.get('Access-Control-Allow-Headers'), /Authorization/);
+    assert.equal((await fetch(base + '/api/state', { headers: { ...headers, Origin: 'https://relay.example.evil.test' } })).status, 403);
   });
   it('runs scripted conversations through actual MCP without prematurely executing', async () => {
     await request('/api/reset', {});
@@ -105,6 +115,7 @@ describe('Relay real HTTP and SQLite integration', { concurrency: false }, () =>
     assert.ok(result.state.journal.length > previous.journal.length);
   });
   it('binds explicit chat approval to the alternative actually selected in the interface', async () => {
+    await request('/api/reset', {});
     await request('/api/preferences', { key: 'maxExtraCost', value: 20 });
     const { result: state } = await request('/api/scenario', { scenario: 'partner-delayed' });
     const alternative = state.plans.find(plan => plan.feasible && plan.id !== state.activePlanId);
@@ -114,6 +125,22 @@ describe('Relay real HTTP and SQLite integration', { concurrency: false }, () =>
     assert.equal(result.state.phase, 'resolved');
     assert.equal(result.state.lastExecution.planId, alternative.id);
     assert.equal(result.state.tasks.find(task => task.id === 'pickup').owner, 'morgan');
+  });
+  it('enforces cumulative exact constraints through MCP and imports a real calendar payload', async () => {
+    await request('/api/reset', {});
+    const message = "Alex is delayed by 45 minutes. School closes at 3:10. Don't move my client call. Keep spending under $10.";
+    const { response, result } = await request('/api/chat', { message });
+    assert.equal(response.status, 200);
+    assert.equal(result.state.tasks.find(task => task.id === 'meeting').flexible, false);
+    assert.equal(result.state.members.find(person => person.id === 'alex').availableFrom, 980);
+    assert.equal(result.state.plans.filter(plan => plan.feasible).length, 1);
+    const unavailability = await request('/api/scenario', { scenario: 'backup-unavailable' });
+    assert.equal(unavailability.result.plans.filter(plan => plan.feasible).length, 0);
+    assert.equal(unavailability.result.preferences.maxExtraCost, 9.99);
+    const text = 'BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20261015T143000\nDTEND:20261015T163000\nSUMMARY:Imported presentation\nEND:VEVENT\nEND:VCALENDAR';
+    const imported = await request('/api/calendar', { text, ownerId: 'priya' });
+    assert.equal(imported.response.status, 200);
+    assert.equal(imported.result.tasks.find(task => task.id === 'meeting').title, 'Imported presentation');
   });
   it('persists household preferences and conversation after a process restart', async () => {
     const previous = (await request('/api/state')).result;

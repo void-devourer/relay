@@ -12,11 +12,11 @@ This draft separates the product story from evidence to collect. Replace bracket
 
 **Solution:** Relay turns a spoken or typed disruption into constraint-checked alternatives. It explains who can cover pickup, which commitments must move, what the recovery costs, and what stays protected. The user reviews a before/after schedule and approves the selected proposal. Receipts, persistent preferences, a failure demonstration, and undo make the result inspectable.
 
-**What we built:** A responsive Alexa+ web simulator and a separately runnable self-hosted MCP server. Both use the same domain engine. Browser sandbox mode persists locally; the Node application persists in SQLite. The server exposes household, disruption, proposal, preference, confirmation, execution, undo, and journal tools through the official MCP SDK over Streamable HTTP. Integration coverage verifies negotiated protocol 2025-11-25, all eight tools, actual chat-to-MCP calls, and SQLite restart persistence. Typecheck, production build, and 28 tests pass.
+**What we built:** A responsive Alexa+ simulator backed by per-user hosted D1 storage, with a separately runnable Node/SQLite server. Both use the same domain engine and official MCP SDK. Ten tools expose household state, cumulative parameterized disruptions, hard meeting constraints, ICS import, proposals, preferences, review, execution, undo and receipts. The public MCP endpoint uses Streamable HTTP 2025-11-25. The hosted web host uses SDK in-process MCP; Node uses actual HTTP MCP. Typecheck, production build, and 41 tests pass, covering the engine, HTTP transport, restart persistence and a D1 test adapter. Real cloud deployment verification is distinct from those local tests.
 
 **Why it is distinctive:** Relay repairs several connected commitments while respecting travel, confirmed caregiver availability, budget, and protected dinner. Proposals bind to current household state. The failure demonstration restores sandbox tasks instead of reporting partial success. The interaction exposes the decision and its consequences before execution.
 
-**Honest boundaries:** This is an Alexa+ experience simulator, not a live Alexa+ integration. All household data and calendar, pickup, grocery, and dinner actions are sandbox fixtures. Default conversation uses supported scripted intents. Optional Bedrock code must be labeled unconfigured/unverified unless its real tool loop has been tested with credentials. The private hosted Site runs the browser simulation; self-hosted MCP has its own run/deployment path.
+**Honest boundaries:** This is an Alexa+ experience simulator, not a live Alexa+ integration. Household service actions are simulated; imported calendar input is read-only at its source. Default conversation uses a labeled rules host with compound constraints. A persistent failure blocks the failed workflow and rechecks alternatives after task rollback. Optional Bedrock is unverified because the SDK found no usable credentials or configured model. The hosted D1 household and Node SQLite household are separate. External backend connection tokens stay in page memory.
 
 **Links:** Repository [URL]; private hosted simulator [URL and access instructions]; video [YouTube/Vimeo URL]; local setup and MCP testing [README link].
 
@@ -62,7 +62,7 @@ For each actual tool, answer: purpose; setup/onboarding experience; what worked;
 
 ## Evidence checklist
 
-- [x] Typecheck and production build passed; all 28 tests passed; read-only MCP smoke discovered eight tools and read four persisted tasks.
+- [x] Typecheck and production build passed; all 41 tests passed; read-only MCP smoke discovered ten tools and read persisted tasks.
 - [x] MCP initialization negotiated 2025-11-25; integration tests exercised actual HTTP tool invocation.
 - [ ] Inspect both server mode and hosted browser sandbox; describe their separate persistence.
 - [x] Local browser QA exercised explicit approval, injected rollback, retry, applied-state refresh and grounded pickup status; integration tests cover undo.

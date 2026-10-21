@@ -1,4 +1,5 @@
 {
   "project_id": "appgprj_6acfd8a3fba08191a707d56d57503995",
-  "static": { "directory": "dist" }
+  "d1": { "binding": "DB" },
+  "capabilities": ["mcp"]
 }
